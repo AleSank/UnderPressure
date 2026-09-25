@@ -4,8 +4,8 @@ import Foundation
 /// final hardware stress (see `UnderPressureScore`).
 ///
 /// Only what the stress needs is read on every tick (a few µs each). Display-only values
-/// — temperatures (≈ 17 ms: one IOHID event per die sensor), RAM used % and the top
-/// apps — are read only while the menu is open (`showsMenuDetails`).
+/// — temperatures (up to ≈ 17 ms), fan speeds and the top apps — are read only while the
+/// menu is open (`showsMenuDetails`).
 ///
 /// Adaptive polling: every 3.0 s while calm, every 1.5 s while active (stress ≥ 50% or a
 /// thermal state above nominal). The UI subscribes via `onUpdate`; the icon animation
@@ -26,6 +26,8 @@ final class UnderPressureMonitor {
 
     private(set) var cpuTemperature: Double?
     private(set) var gpuTemperature: Double?
+    /// One entry per fan; `nil` on fanless Macs.
+    private(set) var fans: [FanReader.Fan]?
     private(set) var lastError: String?
     /// Heaviest apps (up to `topAppCount`, unfiltered: the menu decides what is worth
     /// showing).
@@ -59,7 +61,8 @@ final class UnderPressureMonitor {
     private let memoryReader = MemoryReader()
     private let pressureReader = MemoryPressureReader()
     private let diskReader = DiskReader()
-    private let temperatureReader = TemperatureReader()
+    private let temperatureReader: TemperatureReader
+    private let fanReader: FanReader
     private var appsReader = TopAppsReader()
 
     private var timer: Timer?
@@ -80,6 +83,13 @@ final class UnderPressureMonitor {
     private static let sustainedTimeConstant: TimeInterval = 20
     /// Delay of the first top-CPU reading after the menu opens.
     private static let detailsWarmUp: TimeInterval = 0.75
+
+    init() {
+        // One SMC connection shared by temperatures and fans.
+        let smc = SMCClient()
+        temperatureReader = TemperatureReader(smc: smc)
+        fanReader = FanReader(smc: smc)
+    }
 
     func start() {
         guard timer == nil else { return }
@@ -166,6 +176,7 @@ final class UnderPressureMonitor {
     private func sampleMenuDetails() {
         cpuTemperature = temperatureReader.sampleCPU() ?? cpuTemperature
         gpuTemperature = temperatureReader.sampleGPU() ?? gpuTemperature
+        fans = fanReader.sample()
         let sensorsMissing = cpuTemperature == nil && gpuTemperature == nil && gpuPercent == nil
         lastError = sensorsMissing ? "Some sensors unavailable on this Mac" : nil
         sampleTopApps()

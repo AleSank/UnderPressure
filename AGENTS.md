@@ -8,7 +8,7 @@ UnderPressure is a macOS **menubar-only** system monitor (`LSUIElement`, no Dock
 18×18 pt circle glyph fills like a liquid with the Mac's **final hardware stress** (0–100%). Its
 waves get faster and choppier, and its color moves from menubar white to amber, orange, then
 red as stress rises. Clicking it opens an `NSMenu` showing live CPU % + temp, GPU % + temp,
-RAM used %, and disk busy % (in that order). RAM and Disk intentionally show **percentage
+on Macs with fans the fan speed, RAM used % and disk busy % (in that order). RAM and Disk intentionally show **percentage
 only** (product decision).
 
 - macOS 14+, universal binary (arm64 + x86_64), Swift 6 language mode.
@@ -63,8 +63,10 @@ Metrics/
   MemoryPressureReader.swift  Native kernel memory pressure (sysctl), banded, for the stress
   GPUReader.swift          IOAccelerator "PerformanceStatistics"
   DiskReader.swift         IOBlockStorageDriver "Statistics" busy time (disk0, else busiest)
-  TemperatureReader.swift  IOHID private sensors → AppleSMC key fallback (CPU, GPU)
-  SMCClient.swift          AppleSMC user client (80-byte SMCKeyData struct)
+  TemperatureReader.swift  CPU/GPU °C: IOHID core sensors → SMC keys per chip → fallbacks
+  TemperatureKeys.swift    Chip detection + SMC temperature key tables (M1…M5, A18 Pro, Intel)
+  FanReader.swift          Fan RPM and share of max (FNum, F<n>Ac, F<n>Mx), menu-only
+  SMCClient.swift          AppleSMC user client (80-byte SMCKeyData struct, typed decoding)
   TopAppsReader.swift      Heaviest apps by CPU share and memory (proc_pid_rusage), menu-only
   IORegistry.swift         IOKit helpers + RescanGate (rate-limited rediscovery)
 ```
@@ -77,9 +79,9 @@ the animator updates layer properties inside a 0.5 s `CATransaction`.
 Everything runs on the main actor (`SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`). What the
 stress needs costs a few µs per tick once devices are cached (measured: CPU 1 µs, GPU 28 µs,
 disk 11 µs, RAM used 1 µs, RAM pressure 2 µs), so a background queue isn't worth the extra complexity.
-Display-only values are read **only while the menu is open** (`showsMenuDetails`): CPU
-temperature costs ≈ 17 ms (one IOHID event per die sensor, ~20 on an M3 Pro), GPU temperature
-≈ 0.25 ms, the top-apps walk ≈ 0.8 ms. Types that must be touched from a `deinit` (e.g.
+Display-only values are read **only while the menu is open** (`showsMenuDetails`):
+temperatures ≈ 7–10 ms per read on an M3 Pro (≈ 25 ms the first time, while keys are
+resolved), fans < 0.1 ms, the top-apps walk ≈ 0.8 ms. Types that must be touched from a `deinit` (e.g.
 `IORegistry`) are marked `nonisolated`.
 
 ## Stress engine
@@ -254,8 +256,9 @@ Footprint must stay flat over time. A steady climb means a leak.
 | Thermal state (stress, tones) | `ProcessInfo.thermalState` | serious → ≥ 75, critical → 100 |
 | Top apps (menu) | `proc_listallpids` + `proc_pid_rusage` v2 + `proc_pidpath` | User processes only, grouped by `.app` of the process or an ancestor; CPU as share of the whole CPU, memory as `ri_phys_footprint` |
 | Disk % | `IOBlockStorageDriver` `Statistics` | Δ(read+write total time ns) / Δwall; cached `disk0` driver |
-| CPU temp | IOHID (`PrimaryUsagePage 0xff00`, usage 5) by product-name allowlist → SMC `TC0P`… | Deny-list filters battery/skin/NAND etc. |
-| GPU temp | IOHID GPU names → SMC `Tg0D` (AS), `TG0D`… (Intel/AMD) | |
+| CPU temp | IOHID `pACC`/`eACC MTR` (M1/M2) → SMC core keys for the chip (`TemperatureKeys`) → IOHID `PMU tdie…` | Average of plausible sensors (10–110 °C); Intel: first of `TCAD`, `TC0P`, `TC0D`… |
+| GPU temp | IOHID `GPU MTR` (M1/M2) → SMC GPU keys for the chip → any `Tg…` key (newer chips) | Average of plausible sensors; Intel: `TG0D`, `TGDD` (AMD), `TG0P`, `TCGC` (Intel iGPU) |
+| Fans (menu) | SMC `FNum`, `F<n>Ac` (actual), `F<n>Mx` (max) | `flt ` on Apple Silicon, `fpe2` on Intel; % = actual / max; row hidden without fans; 0 rpm → "Off" |
 
 The last good CPU %, GPU %, disk %, and CPU/GPU temperature values are kept if a single read
 returns `nil`.
@@ -263,13 +266,26 @@ returns `nil`.
 ## UI conventions
 
 - The menu is plain AppKit `NSMenu`. Metric rows are **custom-view items** (disabled, fixed
-  width, monospaced digits, clipping, padded `String(format:)`), so they never highlight and the
-  menu width never changes while it's open. Only Check for Updates, Launch at Login (checkmark),
-  About and Quit are real, selectable items.
-  Metric rows are as tall as a standard menu item (measured once at runtime, since it varies
-  by macOS version), with no spacer, so the gap above CPU equals the gap below Quit. Row order: CPU, GPU, RAM, Disk. Labels: acronyms
-  uppercase (`CPU`, `GPU`, `RAM`), words title-case (`Disk`). Formats: `CPU/GPU: n% · n°`,
-  `RAM/Disk: n%`.
+  width, clipping, monospaced digits), so they never highlight and the menu width never
+  changes while it's open. Only Check for Updates, Launch at Login (checkmark), About and Quit
+  are real, selectable items. Metric rows are as tall as a standard menu item (measured once at
+  runtime, since it varies by macOS version), with no spacer, so the gap above CPU equals the
+  gap below Quit.
+- Row order: CPU, GPU, Fan(s), RAM, Disk. The fan row exists only on Macs with fans (fanless
+  MacBook Airs never show it). Labels: acronyms uppercase (`CPU`, `GPU`, `RAM`), words
+  title-case (`Fans`, `Disk`).
+- **Columns, not spaces** (settled with the owner on screen): rows are `label ⇥ value ⇥ detail`
+  (`MenuCopy.columns`; top apps `⇥ percentage ⇥ app`), rendered with one shared paragraph
+  style (`StatusItemController.rowStyle`): values **right-aligned** in a column that fits
+  "100%" (6 pt after the widest label in `MenuCopy.columnLabels`), so a row never changes
+  length as its value grows; details start **one space** after that column, so CPU, GPU and
+  Fans read `7% · 45°` with equal space around the separator, and separators line up.
+  Rejected: left-aligned values (separators land at different x), and a fixed detail column
+  far from the value (the dot looks glued to the detail). Formats: `CPU/GPU ⇥ n% ⇥ · n°`,
+  `Fans ⇥ n% ⇥ · n rpm` (share of max · actual, averaged; `Fan:` with one fan; `· Off` when
+  stopped), `RAM/Disk ⇥ n%`. Add any new label to `columnLabels`.
+- Metric text starts 28 pt in (`metricLeadingInset`), aligned with the titles of the real items
+  below, which reserve a checkmark column (measured on screen).
 - Below Disk, small secondary rows (`MenuCopy.DetailRow`) appear only when relevant, in this order:
   `Top apps (CPU)` followed by up to 2 rows `n%  <app>` (share of the whole CPU, same scale as
   the CPU row; only apps at 35% or more), `Memory pressure: high/critical ·
@@ -293,13 +309,25 @@ returns `nil`.
 - IOHID temperature symbols (`IOHIDEventSystemClientCreate`, `IOHIDServiceClientCopyEvent`, …)
   are resolved with `dlsym`, so a missing symbol degrades to `nil` and never crashes.
   `IOHIDServiceClientCopyEvent`'s signature is `(service, int64 type, int32 options, int64 timestamp)`.
-- SMC: 80-byte struct, selector 2; command 9 = key info, 5 = read bytes. Only `flt ` and `sp78`
-  types are decoded. Readings outside −20…120 °C are rejected.
-- Sensor product names and SMC keys vary by chip. When adding support for a new Mac, append to
-  the allowlists in `TemperatureReader.swift` and keep the key tables documented.
+- SMC: 80-byte struct, selector 2; command 9 = key info, 5 = read bytes, 8 = key at index
+  (`data32`); `#KEY` (`ui32`, big-endian) is the key count. `SMCClient.keys(withPrefix:)`
+  enumerates all keys once (≈ 20–40 ms, cached) for the GPU discovery fallback. Decoded types:
+  `flt ` (little-endian), `sp78`, `fpe2`, `ui8/16/32` (big-endian); `SMCClient.decode` is pure
+  and unit tested. Temperatures outside 10…110 °C are treated as "not a sensor".
+- **Temperature keys differ per chip generation, and no generic rule is safe.** On an M3 Pro
+  some keys hold constants (`Tf16` = 77, `Tf12` = −11) and some `Tp…` keys fall under load, so a
+  blind "hottest key with prefix X" picks garbage. That's why `TemperatureKeys` holds curated
+  tables per chip (source: Stats, `Modules/Sensors/values.swift`, plus keys measured on an
+  M3 Pro that rise under a full CPU load), and groups report the **average** of plausible keys.
+  Chips newer than the tables get the union of all Apple Silicon tables, and the GPU a `Tg…`
+  scan as last resort. HID `PMU tdie…` sensors are the power-manager die, ≈ 15–20 °C cooler
+  than the cores under load: last resort only. When a new chip ships, add its keys (check
+  them the same way: idle vs. 20 s of `yes` on every core).
 - Every reader must return `nil` instead of trapping when hardware or keys are missing.
   The UI shows `—`.
-- Only verified on an M3 Pro. Intel / discrete-GPU paths are implemented but untested.
+- Verified on an M3 Pro (all readings, fans included). An M2 MacBook Air runs the app; its GPU
+  temperature was missing before the per-chip tables (to confirm). Other chips and Intel /
+  discrete-GPU Macs follow the public tables but are untested.
 
 ## Coding conventions
 
@@ -333,11 +361,19 @@ returns `nil`.
   numeric only: a tag the checker can't parse is ignored.
 - **Distribution:** GitHub releases only, not notarized (no Developer ID yet). The build is
   ad-hoc signed with the hardened runtime. README → Install explains the first-open steps.
-- **Making a release:** bump `MARKETING_VERSION` (both target configs) and add a
-  `CHANGELOG.md` entry, then run `Tools/make-release.sh`: it runs the tests, builds the
-  universal Release app, checks archs / version / signature and writes
-  `dist/UnderPressure-<version>.zip` with its SHA-256. Commit, tag `v<version>`, push, and
-  attach the zip to a GitHub release for that tag. `build/` and `dist/` are git-ignored.
+- **Making a release** (automated):
+  1. `Tools/bump-version.sh 1.2.0` sets `MARKETING_VERSION` (app + tests), increments
+     `CURRENT_PROJECT_VERSION` and adds a `## 1.2.0` section to `CHANGELOG.md`.
+  2. Describe the changes in that section (the placeholder line makes the release fail).
+  3. Commit, then `git tag v1.2.0 && git push origin main v1.2.0`.
+  4. `.github/workflows/release.yml` (runner `macos-26`, Xcode 26.x) checks the tag equals
+     `v<MARKETING_VERSION>`, extracts the notes (`Tools/changelog-section.sh`), runs
+     `Tools/make-release.sh` (tests, universal Release build, arch/version/signature checks,
+     `dist/UnderPressure-<version>.zip`) and publishes the GitHub release with the zip.
+  Run `Tools/make-release.sh` locally to check a release before tagging. `ci.yml` builds and
+  tests every push to `main` and every pull request. CI uses Xcode 26 while development here
+  uses Xcode 27: keep the project and Swift code buildable with the CI's Xcode.
+  `build/` and `dist/` are git-ignored.
 
 ## Housekeeping
 

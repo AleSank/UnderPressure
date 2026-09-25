@@ -6,9 +6,33 @@ import AppKit
 /// Driven by `UnderPressureMonitor.onUpdate`: new stress is handed to `LiquidIconAnimator`
 /// (which owns the icon), and metric rows are refreshed only while the menu is open.
 final class StatusItemController: NSObject, NSMenuDelegate {
-    private static let menuContentWidth: CGFloat = 220
-    private static let metricLeadingInset: CGFloat = 14
+    private static let menuContentWidth: CGFloat = 206
+    /// Aligns metric text with the titles of the real items below, which leave room for a
+    /// checkmark column (measured on screen: 14 pt more than a bare custom view).
+    private static let metricLeadingInset: CGFloat = 28
     private static let metricFieldHeight: CGFloat = 16
+    /// Space between the widest label and a 100% value.
+    private static let columnGap: CGFloat = 6
+    private static let bodyFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+    private static let smallFont = NSFont.monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+    /// Tab stops shared by every row (see `MenuCopy`): values right-aligned in a column that
+    /// fits "100%" after the widest label; details (and top-app names) start one space after
+    /// it, so the separator in `7% · 45°` has a space on each side. Measured with the body
+    /// font, so small rows (top apps) line up with the metrics too.
+    private static let rowStyle: NSParagraphStyle = {
+        let attributes: [NSAttributedString.Key: Any] = [.font: bodyFont]
+        let width = { (text: String) in ceil((text as NSString).size(withAttributes: attributes).width) }
+        let labelColumn = MenuCopy.columnLabels.map(width).max() ?? 0
+        let valueEnd = labelColumn + columnGap + width(MenuCopy.widestPercentage)
+        let space = (" " as NSString).size(withAttributes: attributes).width
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byClipping
+        style.tabStops = [
+            NSTextTab(textAlignment: .right, location: valueEnd),
+            NSTextTab(textAlignment: .left, location: valueEnd + space),
+        ]
+        return style
+    }()
     /// Metric rows are as tall as a standard text item (it varies by macOS version), so the
     /// gap above CPU equals the gap below Quit without any spacer.
     private static let metricRowHeight = standardItemHeight()
@@ -25,6 +49,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let gpuField = StatusItemController.metricField()
     private let ramField = StatusItemController.metricField()
     private let diskField = StatusItemController.metricField()
+    private let fanField = StatusItemController.metricField()
+    private var fanItem: NSMenuItem?
     private let topAppsHeaderField = StatusItemController.metricField(size: .small)
     private let topAppFields = (0..<UnderPressureMonitor.topAppCount).map { _ in
         StatusItemController.metricField(size: .small)
@@ -103,6 +129,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         set(gpuField, MenuCopy.gpuRow(monitor), tone: MenuCopy.gpuTone(monitor))
         set(ramField, MenuCopy.ramRow(monitor), tone: MenuCopy.ramTone(monitor))
         set(diskField, MenuCopy.diskRow(monitor), tone: MenuCopy.diskTone(monitor))
+        let fans = MenuCopy.fanRow(monitor)
+        set(fanField, fans ?? "", tone: .primary)
+        fanItem?.isHidden = fans == nil
 
         for (index, field) in topAppFields.enumerated() {
             show(MenuCopy.topAppRow(monitor, at: index), in: field, item: topAppItems[index])
@@ -117,8 +146,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     /// menu stays open they don't disappear again (their text keeps updating), so the
     /// menu never shrinks or jumps under the pointer.
     private func show(_ row: MenuCopy.DetailRow, in field: NSTextField, item: NSMenuItem?) {
-        field.stringValue = row.text
-        field.textColor = row.tone.nsColor
+        set(field, row.text, tone: row.tone)
         if row.isRelevant {
             item?.isHidden = false
         }
@@ -129,8 +157,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     private func set(_ field: NSTextField, _ text: String, tone: MenuCopy.Tone) {
-        field.stringValue = text
-        field.textColor = tone.nsColor
+        field.attributedStringValue = NSAttributedString(string: text, attributes: [
+            .font: field.font ?? Self.bodyFont,
+            .foregroundColor: tone.nsColor,
+            .paragraphStyle: Self.rowStyle,
+        ])
     }
 
     // MARK: - Menu structure
@@ -138,10 +169,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private func buildMenu() {
         menu.addItem(viewItem(field: cpuField))
         menu.addItem(viewItem(field: gpuField))
+        let fanItem = viewItem(field: fanField)
+        fanItem.isHidden = true
+        menu.addItem(fanItem)
+        self.fanItem = fanItem
         menu.addItem(viewItem(field: ramField))
         menu.addItem(viewItem(field: diskField))
 
-        topAppsHeaderField.stringValue = MenuCopy.topAppsHeader
+        set(topAppsHeaderField, MenuCopy.topAppsHeader, tone: .secondary)
         topAppsHeaderItem = hiddenItem(field: topAppsHeaderField)
         topAppItems = topAppFields.map { hiddenItem(field: $0) }
         pressureItem = hiddenItem(field: pressureField)
@@ -211,13 +246,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private static func metricField(size: FontSize = .body) -> NSTextField {
         let field = NSTextField(labelWithString: "")
         field.lineBreakMode = .byClipping
-        switch size {
-        case .body:
-            field.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-        case .small:
-            field.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-            field.textColor = .secondaryLabelColor
-        }
+        field.font = size == .body ? bodyFont : smallFont
         return field
     }
 

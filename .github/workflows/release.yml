@@ -1,0 +1,41 @@
+# Publishes a GitHub release when a version tag (v1.2.3) is pushed: checks that the tag
+# matches MARKETING_VERSION, runs the tests, builds the universal app and attaches the zip,
+# with the CHANGELOG.md section of that version as release notes.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the project version
+        run: |
+          version=$(sed -nE 's/.*MARKETING_VERSION = ([0-9.]+);.*/\1/p' UnderPressure.xcodeproj/project.pbxproj | head -1)
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} doesn't match MARKETING_VERSION ${version} (expected v${version})."
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Release notes from CHANGELOG.md
+        run: Tools/changelog-section.sh "$VERSION" > release-notes.md
+
+      - name: Test, build and package
+        run: Tools/make-release.sh
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "dist/UnderPressure-${VERSION}.zip" \
+            --title "UnderPressure ${VERSION}" \
+            --notes-file release-notes.md \
+            --verify-tag

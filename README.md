@@ -26,13 +26,15 @@ UnderPressure measures how much your Mac is **struggling**, not just how busy it
 ## The menu
 
 ```
-CPU:  24% · 45°
-GPU:   3% · 41°
-RAM:  52%
-Disk:  0%
+CPU:    24% · 45°
+GPU:     3% · 41°
+Fans:   34% · 2317 rpm
+RAM:    52%
+Disk:    0%
 ```
 
-- **CPU / GPU**: current load and temperature.
+- **CPU / GPU**: current load and average temperature of the CPU cores and of the GPU.
+- **Fans**: speed as a share of the fans' maximum, then the actual speed (averaged over the fans). Only on Macs that have fans. On Apple Silicon the fans often stop when the Mac is cool: the row then reads **0% · Off**.
 - **RAM**: memory used by your apps and the system, the same figure as "Memory Used" in Activity Monitor (files macOS merely caches are not counted). It turns orange from 90% or when macOS reports memory pressure, and red when that pressure is critical.
 - **Disk**: how busy the system disk is (not how full it is).
 
@@ -58,7 +60,8 @@ Advanced users can skip step 2 with `xattr -dr com.apple.quarantine /Application
 
 - macOS 14 Sonoma or later.
 - Universal app: runs natively on Apple Silicon and Intel Macs.
-- Tested on Apple Silicon (M3 Pro). Intel Macs and other Apple Silicon chips are supported but not yet tested. If a sensor isn't available on your Mac, its value shows as `—` and everything else keeps working.
+- Load, memory, disk and thermal state use public macOS interfaces and work on every supported Mac.
+- Temperatures and fans come from hardware sensors whose names change with every chip. UnderPressure knows the sensors of M1, M2, M3, M4 and M5 chips and of Intel Macs, but it has been tested only on an M3 Pro. If a sensor isn't available on your Mac, its value shows as `—` and everything else keeps working. [Open an issue](https://github.com/AleSank/UnderPressure/issues) with your Mac model if that happens.
 
 ## Privacy
 

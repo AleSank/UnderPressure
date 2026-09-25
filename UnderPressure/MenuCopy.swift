@@ -1,7 +1,11 @@
 import AppKit
 
-/// Menu row strings and warning tones. Formats are padded so the monospaced-digit
-/// rows keep a constant width as values change.
+/// Menu row strings and warning tones.
+///
+/// Rows are three columns — `label ⇥ value ⇥ detail` (top apps: `⇥ percentage ⇥ app`) —
+/// rendered with shared tab stops (`StatusItemController.rowStyle`): values right-aligned in
+/// a column sized for "100%" (a row never changes length as the value grows), details one
+/// space after it, so `7% · 45°` has equal space around the separator and separators line up.
 enum MenuCopy {
     enum Tone: Int, Comparable {
         case secondary, primary, orange, red
@@ -28,34 +32,55 @@ enum MenuCopy {
     }
 
     static let topAppsHeader = "Top apps (CPU)"
+    /// Every label of the first column; the widest one sizes it.
+    static let columnLabels = ["CPU:", "GPU:", "Fan:", "Fans:", "RAM:", "Disk:"]
+    /// Widest value; sizes the value column before the details.
+    static let widestPercentage = "100%"
 
     // MARK: - Rows
 
     static func cpuRow(_ monitor: UnderPressureMonitor) -> String {
-        "CPU: \(percent(monitor.cpuPercent)) · \(degrees(monitor.cpuTemperature))"
+        columns("CPU:", percent(monitor.cpuPercent), "· \(degrees(monitor.cpuTemperature))")
     }
 
     static func gpuRow(_ monitor: UnderPressureMonitor) -> String {
-        "GPU: \(percent(monitor.gpuPercent)) · \(degrees(monitor.gpuTemperature))"
+        columns("GPU:", percent(monitor.gpuPercent), "· \(degrees(monitor.gpuTemperature))")
+    }
+
+    /// Below CPU and GPU; `nil` on Macs without fans (the row is hidden).
+    static func fanRow(_ monitor: UnderPressureMonitor) -> String? {
+        monitor.fans.map(fanText)
+    }
+
+    /// Same shape as the CPU/GPU rows: share of maximum speed, then the actual speed
+    /// (averaged over the fans) — `Fans ⇥ 34% ⇥ · 2317 rpm` — or `· Off` when they are
+    /// stopped (Apple Silicon fans stop at low load).
+    static func fanText(_ fans: [FanReader.Fan]) -> String {
+        let label = fans.count == 1 ? "Fan:" : "Fans:"
+        let rpm = average(fans.map(\.rpm)) ?? 0
+        let percents = fans.compactMap(\.percent)
+        let share = percents.count == fans.count ? average(percents) : nil
+        guard rpm.rounded() > 0 else { return columns(label, percent(0), "· Off") }
+        return columns(label, percent(share), "· \(String(format: "%.0f", rpm)) rpm")
     }
 
     static func ramRow(_ monitor: UnderPressureMonitor) -> String {
-        "RAM: \(percent(monitor.memoryUsedPercent))"
+        columns("RAM:", percent(monitor.memoryUsedPercent))
     }
 
     static func diskRow(_ monitor: UnderPressureMonitor) -> String {
-        "Disk: \(percent(monitor.diskPercent))"
+        columns("Disk:", percent(monitor.diskPercent))
     }
 
     /// The `index`-th heaviest app, e.g. ` 42%  Xcode` (share of the whole CPU, same scale
     /// as the CPU row). Relevant from `UnderPressureMonitor.topAppThreshold`.
     static func topAppRow(_ monitor: UnderPressureMonitor, at index: Int) -> DetailRow {
         guard monitor.topCPUApps.indices.contains(index) else {
-            return DetailRow(text: "  —", tone: .secondary, isRelevant: false)
+            return DetailRow(text: "\t\(percent(nil))", tone: .secondary, isRelevant: false)
         }
         let app = monitor.topCPUApps[index]
         return DetailRow(
-            text: "\(percent(app.value))  \(app.name)",
+            text: "\t\(percent(app.value))\t\(app.name)",
             tone: .secondary,
             isRelevant: app.value >= UnderPressureMonitor.topAppThreshold
         )
@@ -118,12 +143,21 @@ enum MenuCopy {
 
     // MARK: - Helpers
 
+    /// `label ⇥ value ⇥ detail` (see the type doc); the detail is optional.
+    private static func columns(_ label: String, _ value: String, _ detail: String? = nil) -> String {
+        [label, value, detail].compactMap { $0 }.joined(separator: "\t")
+    }
+
     private static func percent(_ value: Double?) -> String {
-        value.map { String(format: "%3.0f%%", $0) } ?? "  —"
+        value.map { String(format: "%.0f%%", $0) } ?? "—"
     }
 
     private static func degrees(_ celsius: Double?) -> String {
-        celsius.map { String(format: "%3.0f°", $0) } ?? "  —"
+        celsius.map { String(format: "%.0f°", $0) } ?? "—"
+    }
+
+    private static func average(_ values: [Double]) -> Double? {
+        values.isEmpty ? nil : values.reduce(0, +) / Double(values.count)
     }
 
     private static func gigabytes(_ bytes: Double) -> String {

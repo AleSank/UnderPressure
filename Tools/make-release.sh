@@ -2,11 +2,22 @@
 # Builds a release for GitHub: runs the tests, builds the universal (arm64 + x86_64)
 # Release app, checks it, and packs it as dist/UnderPressure-<version>.zip.
 # Usage: Tools/make-release.sh   (run from anywhere; the version comes from the project)
+# The Release workflow (.github/workflows/release.yml) runs it on every v* tag and publishes
+# the result; run it locally to check a release before tagging.
 set -euo pipefail
 
 root=${0:A:h:h}
 cd "$root"
-export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
+# Use the selected Xcode (CI selects one); fall back to /Applications/Xcode.app when only the
+# Command Line Tools are selected, which can't build apps.
+if [[ -z ${DEVELOPER_DIR:-} ]]; then
+  selected=$(xcode-select -p 2>/dev/null || true)
+  if [[ -z $selected || $selected == *CommandLineTools* ]]; then
+    export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+  else
+    export DEVELOPER_DIR=$selected
+  fi
+fi
 derived=build/DerivedData
 app=$derived/Build/Products/Release/UnderPressure.app
 
@@ -38,11 +49,4 @@ rm -f "$zip"
 ditto -c -k --keepParent "$app" "$zip"
 shasum -a 256 "$zip"
 
-cat <<NEXT
-
-Done: $zip
-Next steps:
-  1. Commit, then: git tag v$version && git push origin main --tags
-  2. On GitHub, create a release for tag v$version (notes: CHANGELOG.md) and attach the zip.
-     The tag must be v$version: the in-app update check compares it with installed versions.
-NEXT
+echo "Done: $zip"
