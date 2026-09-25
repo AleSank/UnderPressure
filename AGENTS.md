@@ -365,7 +365,10 @@ returns `nil`.
   1. `Tools/bump-version.sh 1.2.0` sets `MARKETING_VERSION` (app + tests), increments
      `CURRENT_PROJECT_VERSION` and adds a `## 1.2.0` section to `CHANGELOG.md`.
   2. Describe the changes in that section (the placeholder line makes the release fail).
-  3. Commit, then `git tag v1.2.0 && git push origin main v1.2.0`.
+  3. Commit, `git push origin main`, then `git tag v1.2.0 && git push origin v1.2.0` as a
+     **separate** push. (For v1.1.0, pushing branch and tag together — in the push that first
+     added the workflows — created no tag event and the release didn't start; re-pushing the
+     tag fixed it.)
   4. `.github/workflows/release.yml` (runner `macos-26`, Xcode 26.x) checks the tag equals
      `v<MARKETING_VERSION>`, extracts the notes (`Tools/changelog-section.sh`), runs
      `Tools/make-release.sh` (tests, universal Release build, arch/version/signature checks,

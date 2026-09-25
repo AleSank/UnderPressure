@@ -27,6 +27,8 @@ cat <<NEXT
 $current → $version (build $((build + 1))).
 Next:
   1. Describe the changes under "## $version" in CHANGELOG.md.
-  2. Commit, then: git tag v$version && git push origin main v$version
-     The Release workflow tests, builds and publishes the GitHub release with the zip.
+  2. Commit, then push the branch first and the tag separately:
+       git push origin main
+       git tag v$version && git push origin v$version
+     The tag push starts the Release workflow (tests, build, GitHub release with the zip).
 NEXT
